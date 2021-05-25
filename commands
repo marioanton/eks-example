@@ -1,0 +1,176 @@
+
+
+FLUX
+
+
+GITUSER=marioanton
+helm version --short
+
+kubectl apply -f https://raw.githubusercontent.com/fluxcd/helm-operator/master/deploy/crds.yaml
+
+
+kubectl create namespace flux
+helm repo add fluxcd https://charts.fluxcd.io
+
+helm upgrade -i flux fluxcd/flux \
+--set git.url=git@github.com:${GITUSER}/k8s-config \
+--set git.branch=main \
+--namespace flux
+
+
+helm upgrade -i helm-operator fluxcd/helm-operator \
+--set helm.versions=v3 \
+--set git.ssh.secretName=flux-git-deploy \
+--namespace flux
+
+
+sudo wget -O /usr/local/bin/fluxctl $(curl https://api.github.com/repos/fluxcd/flux/releases/latest | jq -r ".assets[] | select(.name | test(\"linux_amd64\")) | .browser_download_url")
+
+
+
+
+mkdir charts namespaces releases workloads
+
+cat << EOF > namespaces/eks-example.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    name: eks-example
+  name: eks-example
+EOF
+
+
+cp /lab/task5/eks-example-deployment.yaml ./workloads/
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eks-example
+  namespace: eks-example
+  labels:
+    app: eks-example
+  annotations:
+    # Container Image Automated Updates
+    flux.weave.works/automated: "true"
+    # do not apply this manifest on the cluster
+    #flux.weave.works/ignore: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eks-example
+  template:
+    metadata:
+      labels:
+        app: eks-example
+    spec:
+      containers:
+      - name: eks-example
+        image: 012345678901.dkr.ecr.us-west-2.amazonaws.com/sourcerepo:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+
+
+cat << EOF > workloads/eks-example-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: eks-example
+  namespace: eks-example
+  labels:
+    app: eks-example
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: eks-example
+EOF
+
+
+export FLUX_POD=$(kubectl get pods -n flux -l app=flux -o jsonpath='{.items[].metadata.name}')
+
+
+
+
+
+
+
+Service Mesh
+
+kubectl get namespace
+kubectl -n prodapp get pods,deploy,service
+
+
+DJ_POD_NAME=$(kubectl get pods -n prodapp -l app=dj -o jsonpath='{.items[0].metadata.name}')
+
+kubectl exec -n prodapp -it ${DJ_POD_NAME} -- /bin/bash
+
+curl -s country-v1:9080 | json_pp
+curl -s rock-v1:9080 | json_pp
+exit
+
+
+
+
+helm version --short
+helm repo add eks https://aws.github.io/eks-charts
+helm repo list
+
+export AWS_REGION=$(curl --silent http://169.254.169.254/latest/meta-data/placement/region)
+$AWS_REGION
+echo $AWS_REGION
+eksctl utils associate-iam-oidc-provider --cluster dev-cluster --approve --region ${AWS_REGION}   -> SERVICE LINKED ROLE
+
+
+
+kubectl create ns appmesh-system
+eksctl create iamserviceaccount --cluster dev-cluster --namespace appmesh-system --name appmesh-controller --attach-policy-arn arn:aws:iam::aws:policy/AWSCloudMapFullAccess,arn:aws:iam::aws:policy/AWSAppMeshFullAccess --override-existing-serviceaccounts --approve --region ${AWS_REGION}
+
+
+
+helm upgrade -i appmesh-controller eks/appmesh-controller --namespace appmesh-system --set region=${AWS_REGION} --set serviceAccount.create=false --set serviceAccount.name=appmesh-controller
+kubectl apply -f /home/ssm-user/djapp/2_app_mesh/namespace.yaml
+kubectl apply -f /home/ssm-user/djapp/2_app_mesh/mesh.yaml
+kubectl apply -f /home/ssm-user/djapp/2_app_mesh/virtual-nodes.yaml
+
+
+cat /home/ssm-user/djapp/2_app_mesh/virtual-nodes.yaml
+kubectl -n prodapp get virtualnodes
+
+kubectl apply -f /home/ssm-user/djapp/2_app_mesh/virtual-services.yaml
+kubectl -n prodapp get virtualservices
+kubectl -n prodapp get service
+
+
+
+kubectl apply -f /home/ssm-user/djapp/2_app_mesh/virtual-routers.yaml
+kubectl -n prodapp get meshes
+kubectl -n appmesh-system get deploy,pods,service
+
+kubectl get all -n prodapp
+kubectl -n appmesh-system get deploy,pods,service
+
+
+kubectl -n prodapp rollout restart deployment dj rock-v1 country-v1
+
+DJ_POD_NAME=$(kubectl get pods -n prodapp -l app=dj -o jsonpath='{.items[0].metadata.name}')
+
+
+ kubectl apply -f /home/ssm-user/djapp/3_canary_test/v2_app.yaml
+kubectl -n prodapp get deployments,services,virtualnodes,virtualrouters
